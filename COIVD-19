@@ -66,7 +66,7 @@ mydf_plot <- mydf[,.( ConfirmedCovidCases_right = sum(ConfirmedCovidCases_right)
 
 mydf <- mydf[time>"2020-03-01",]
 mydf$ConfirmedCovidCases_right <- ifelse(mydf$ConfirmedCovidCases_right<0,0,mydf$ConfirmedCovidCases_right)
-map_data <- rgdal::readOGR("/Users/molly/Desktop/table/COVID-19_HPSC_HIU_Latest_Local_Electoral_Area_Mapped/COVID-19_HPSC_HIU_Latest_Local_Electoral_Area_Mapped.shp")
+map_data <- rgdal::readOGR("/COVID-19_HPSC_HIU_Latest_Local_Electoral_Area_Mapped/COVID-19_HPSC_HIU_Latest_Local_Electoral_Area_Mapped.shp")
 
 
 
