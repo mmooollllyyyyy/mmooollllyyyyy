@@ -1,0 +1,524 @@
+rm(list = ls())
+gc()
+library(jsonlite)
+library(rvest)
+library(stringr)
+library(data.table)
+library(rio)
+library(tidyverse)
+library(DT)
+library(lubridate)
+library(shiny)
+library(shinythemes)
+library(ggplot2)
+library(plotly)
+library(leaflet)
+library(rgdal)
+library(lubridate)
+library(htmltools)
+library(htmlwidgets)
+
+num_url <- "https://services1.arcgis.com/eNO7HHeQ3rUcBllm/arcgis/rest/services/Covid19CountyStatisticsHPSCIrelandPointData/FeatureServer/0/query?f=json&where=1%3D1&outFields=*&returnCountOnly=true" 
+num_json <- read_html(num_url) %>% html_nodes("p") %>% html_text()
+total_num <- fromJSON(num_json)$count 
+page_num <- floor(total_num/2000)  
+
+
+mydf = NULL  
+for (i in 0:page_num) {  
+  index <- i*2000  
+  details_url <- paste("https://services1.arcgis.com/eNO7HHeQ3rUcBllm/arcgis/rest/services/Covid19CountyStatisticsHPSCIrelandPointData/FeatureServer/0/query?f=json&where=1%3D1&outFields=*&returnGeometry=false&resultOffset=",index,sep="")  
+  details_json <- read_html(details_url) %>% html_nodes("p") %>% html_text()  
+  df <- fromJSON(details_json, simplifyVector = FALSE)$features  
+  df <- toJSON(df,null = "null") 
+  df <- fromJSON(df)$attributes  
+  df <- toJSON(df,null = "null") 
+  df <- fromJSON(df)             
+  mydf <- rbind(mydf,df)        
+}
+
+for (j in 1:dim(mydf)[2]) {
+  mydf[,j] <- sapply(mydf[,j], function(x) if (is.null(x[[1]])) x=NA else x)
+}
+
+#Remove ConfirmedCovidDeaths
+mydf <- mydf[ ,-10] 
+
+setDT(mydf)
+
+mydf$time <- ymd_hms(strptime(as.POSIXct(mydf$TimeStampDate/1000 ,origin="1970-01-01"), "%Y-%m-%d %H:%M"))
+mydf$year <- year(mydf$time)
+mydf$month <- month(mydf$time)
+mydf$day <- day(mydf$time)
+mydf$CountyName <- toupper(mydf$CountyName)
+
+mydf$ConfirmedCovidCases[is.na(mydf$ConfirmedCovidCases)] <- 0
+
+# setkeyv(mydf,c("CountyName","time"))
+mydf <- setorder(mydf, CountyName,time)
+
+mydf[,":="(ConfirmedCovidCases_lastday = shift(ConfirmedCovidCases))]
+mydf$ConfirmedCovidCases_lastday[is.na(mydf$ConfirmedCovidCases_lastday)] <- 0
+
+mydf[,":="(ConfirmedCovidCases_right =  ConfirmedCovidCases - ConfirmedCovidCases_lastday  )]
+
+mydf_plot <- mydf[,.( ConfirmedCovidCases_right = sum(ConfirmedCovidCases_right)),.(year,month,CountyName)]
+
+mydf <- mydf[time>"2020-03-01",]
+mydf$ConfirmedCovidCases_right <- ifelse(mydf$ConfirmedCovidCases_right<0,0,mydf$ConfirmedCovidCases_right)
+map_data <- rgdal::readOGR("/Users/molly/Desktop/table/COVID-19_HPSC_HIU_Latest_Local_Electoral_Area_Mapped/COVID-19_HPSC_HIU_Latest_Local_Electoral_Area_Mapped.shp")
+
+
+
+numUrl <- "https://services1.arcgis.com/eNO7HHeQ3rUcBllm/arcgis/rest/services/CovidStatisticsProfileHPSCIrelandOpenData/FeatureServer/0/query?f=json&where=1%3D1&outFields=*&returnCountOnly=true" 
+numJson <- read_html(numUrl) %>% html_nodes("p") %>% html_text() 
+totalNum <- fromJSON(numJson)$count 
+pageNum <- floor(totalNum/2000)  
+
+mydata = NULL  
+for (i in 0:pageNum) {  
+  index <- i*2000  
+  detailsUrl <- paste("https://services1.arcgis.com/eNO7HHeQ3rUcBllm/arcgis/rest/services/CovidStatisticsProfileHPSCIrelandOpenData/FeatureServer/0/query?f=json&where=1%3D1&outFields=*&returnGeometry=false&resultOffset=",index,sep="")  #构造详情页url
+  detailsJson <- read_html(detailsUrl) %>% html_nodes("p") %>% html_text()  
+  Df <- fromJSON(detailsJson, simplifyVector = FALSE)$features  
+  Df <- toJSON(Df,null = "null") 
+  Df <- fromJSON(Df)$attributes  
+  Df <- toJSON(Df,null = "null") 
+  Df <- fromJSON(Df)             
+  mydata <- rbind(mydata,Df)         
+}
+
+
+for (j in 1:dim(mydata)[2]) {
+  mydata[,j] <- sapply(mydata[,j], function(x) if (is.null(x[[1]])) x=NA else x)
+}
+
+
+mydata$Date <- strptime(as.POSIXct(mydata$Date/1000 ,origin="1970-01-01"), "%Y-%m-%d %H:%M")
+mydata$StatisticsProfileDate <- strptime(as.POSIXct(mydata$StatisticsProfileDate/1000 ,origin="1970-01-01"), "%Y-%m-%d %H:%M")
+
+ui <- navbarPage("COVID-19", 
+                 theme = shinytheme("flatly"),
+                 tabPanel("County Statistics",
+                          tagList(
+                            sidebarPanel(width =3,inputPanel(
+                              
+                              selectInput('Year',
+                                          label = h3('Year'),
+                                          choices = c(2020,2021, 2022) ,
+                                          selected = 2020),
+                              
+                              selectInput("Month", 
+                                          label = h3('Month'),
+                                          choices = 1:12,
+                                          selected = 3
+                              ),
+                              
+                              
+                              selectInput('CountyName',
+                                          label = h3('CountyName'),
+                                          choices = unique(mydf$CountyName) ,
+                                          selected = "CARLOW"),
+                              
+                            ))
+                          ),
+                          
+                          fluidPage(
+                            fluidRow(column(9 ,leafletOutput("map")))
+                            
+                            ,fluidRow(column(12,plotlyOutput( "line")))
+                            
+                            ,fluidRow(column(6,dataTableOutput( "dt1")),
+                                      column(6,dataTableOutput( "dt2"))
+                            )
+                            
+                            
+                          )
+                          
+                 ),
+                 
+                 tabPanel('Cases', sidebarLayout(
+                   
+                   # left panel
+                   sidebarPanel(
+                     
+                     # date select panel
+                     dateRangeInput("dateRange", "Select the Date Range", 
+                                    start = max(mydata$Date)-ddays(14),
+                                    end = max(mydata$Date),
+                                    min = min(mydata$Date), 
+                                    max = max(mydata$Date),
+                                    format = "dd-mm-yy",
+                                    separator = "-"),
+                     
+                     # Quick numbers 
+                     
+                     h5("Latest Cases"),
+                     h3(strong(textOutput("newCasesNum"))),
+                     
+                     h5("Total Cases Up To Latest"),
+                     h3(strong(textOutput("totalCasesNum"))),
+                     
+                     h5("Latest Deaths"),
+                     h3(strong(textOutput("newDeathsNum"))),
+                     
+                     h5("Total Deaths Up to Latest"),
+                     h3(strong(textOutput("totalDeathsNum")))
+                   ),
+                   
+                   # main panel with 4 sub-panels
+                   mainPanel(
+                     tabsetPanel(
+                       id = "tabset", 
+                       tabPanel("New Cases", plotlyOutput("newCases"), dataTableOutput("newCasesTab")),
+                       tabPanel("Total Cases", plotlyOutput("totalCases"),dataTableOutput("totalCasesTab")),
+                       tabPanel("New Deaths", plotlyOutput("newDeaths"), dataTableOutput("newDeathsTab")),
+                       tabPanel("Total Deaths", plotlyOutput("totalDeaths"), dataTableOutput("totalDeathsTab")),
+                       
+                     )
+                   )
+                 )
+                 ),
+                 
+                 tabPanel('Details', sidebarLayout(
+                   
+                   # left panel
+                   sidebarPanel(
+                     # select Year
+                     selectInput("year", "Select The Year ", c("2020", "2021", "2022"))
+                   ),
+                   
+                   
+                   # main panel 
+                   mainPanel(
+                     tabsetPanel(
+                       tabPanel("Hospital & ICU", 
+                                plotlyOutput("hospitalCases"), 
+                                plotlyOutput("hospitalratio"),
+                                dataTableOutput("hospitalTab")),
+                       tabPanel("Male & Female", 
+                                plotlyOutput("sexCase"),
+                                dataTableOutput("sexTab")),
+                       tabPanel("Age Group", 
+                                plotlyOutput("ageCase"), 
+                                dataTableOutput("ageTab"))
+                     )
+                   )
+                 )
+                 )
+)
+
+server <- function(input, output) {
+  output$map <- renderLeaflet({
+    
+    map <- sp::merge(map_data,mydf_plot[year==input$Year & month ==input$Month ,],by.x ="COUNTY",by.y = "CountyName",all.x = T )
+    
+    map$ConfirmedCovidCases_right[is.na(map$ConfirmedCovidCases_right)] <- 0
+    
+    
+    pal1 <- colorNumeric(
+      palette = "Reds",
+      domain = map$ConfirmedCovidCases_right
+      
+    ) 
+    
+    leaflet( ) %>%
+      addPolygons(
+        data = map,
+        stroke = TRUE,
+        smoothFactor = 1,
+        fillOpacity = 0.7,
+        weight = 1,
+        color = "black",
+        popup = ~htmltools::htmlEscape(COUNTY),
+        label = ~paste0(COUNTY,":",ConfirmedCovidCases_right),
+        fillColor = ~pal1(ConfirmedCovidCases_right)
+      )
+    
+  })
+  
+  
+  output$line <- renderPlotly({
+    plot_ly(mydf[CountyName  == input$CountyName,], x = ~time ) %>%
+      add_lines(y = ~ConfirmedCovidCases_right, name = "index") %>%
+      layout(
+        title = "",
+        xaxis = list(
+          
+          rangeselector = list(
+            buttons = list(
+              list(
+                count = 3,
+                label = "3 mo",
+                step = "month",
+                stepmode = "todate"),
+              list(
+                count = 6,
+                label = "6 mo",
+                step = "month",
+                stepmode = "todate"),
+              
+              list(
+                count = 1,
+                label = "1 year",
+                step = "year",
+                stepmode = "todate"),
+              list(
+                count = 2,
+                label = "2 year",
+                step = "year",
+                stepmode = "todate"),
+              list(
+                count = 3,
+                label = "3 year",
+                step = "year",
+                stepmode = "todate"),
+              list(
+                count = 5,
+                label = "5 year",
+                step = "year",
+                stepmode = "todate"),
+              list(
+                count = 10,
+                label = "10 year",
+                step = "year",
+                stepmode = "todate"),
+              list(step = "all"))),
+          
+          
+          rangeslider = list(type = "date")),
+        
+        yaxis = list(title = "Cases"))
+    
+    
+    
+    
+    
+  })
+  
+  output$dt1 <- renderDataTable({
+    datatable(mydf_plot[year==input$Year & month ==input$Month ,])
+    
+    
+  })
+  
+  output$dt2 <- renderDataTable({
+    
+    datatable(mydf[CountyName  == input$CountyName,] %>% select(CountyName, PopulationCensus16, ConfirmedCovidCases))
+  })
+  
+  
+  # import data and select relevant variables 
+  
+  data <- reactive({mydata %>%
+      transmute(date = as.Date(Date), 
+                newCases = ConfirmedCovidCases, 
+                totalCases = TotalConfirmedCovidCases, 
+                newDeaths =  ifelse(is.na(ConfirmedCovidDeaths), 0, ConfirmedCovidDeaths), # replace NA with 0
+                totalDeaths = TotalCovidDeaths) %>%
+      filter(date >= input$dateRange[1], date <= input$dateRange[2]) %>%
+      mutate(date = format(date, "%d-%m-%y"))
+  })
+  
+  # import extra data 
+  
+  dataAdd <- reactive({mydata %>%
+      na.omit() %>%
+      mutate(date = as.Date(StatisticsProfileDate), month = month(date),year = year(date)) %>%
+      group_by(year,month) %>%
+      summarise(hospitalCase = last(HospitalisedCovidCases), 
+                icuCase = last(RequiringICUCovidCases),
+                maleCase = last(Male),
+                femaleCase = last(Female), 
+                age1to4 =  last(Aged1to4),
+                age5to14 = last(Aged5to14), 
+                age15to24 = last(Aged15to24), 
+                age25to34 = last(Aged25to34), 
+                age35to44 = last(Aged35to44), 
+                age45to54 = last(Aged45to54), 
+                age55to64 = last(Aged55to64), 
+                unknown = last(Unknown),
+                totalCase = last(CovidCasesConfirmed)) %>%
+      ungroup() %>%
+      mutate(HospitalCase = ifelse(is.na(hospitalCase - lag(hospitalCase)), 
+                                   hospitalCase, hospitalCase - lag(hospitalCase)), 
+             IcuCase = ifelse(is.na(icuCase - lag(icuCase)), 
+                              icuCase, icuCase - lag(icuCase)), 
+             MaleCase = ifelse(is.na(maleCase - lag(maleCase)), 
+                               maleCase, maleCase - lag(maleCase)), 
+             FemaleCase = ifelse(is.na(femaleCase - lag(femaleCase)), 
+                                 femaleCase, femaleCase - lag(femaleCase)), 
+             Age1to4 = ifelse(is.na(age1to4 - lag(age1to4)), 
+                              age1to4, age1to4 - lag(age1to4)), 
+             Age5to14 = ifelse(is.na(age5to14 - lag(age5to14)), 
+                               age5to14, age5to14 - lag(age5to14)), 
+             Age15to24 = ifelse(is.na(age15to24 - lag(age15to24)), 
+                                age15to24, age15to24 - lag(age15to24)), 
+             Age25to34 = ifelse(is.na(age25to34 - lag(age25to34)), 
+                                age25to34, age25to34 - lag(age25to34)), 
+             Age35to44 = ifelse(is.na(age35to44 - lag(age35to44)), 
+                                age35to44, age35to44 - lag(age35to44)), 
+             Age45to54 = ifelse(is.na(age45to54 - lag(age45to54)), 
+                                age45to54, age45to54 - lag(age45to54)), 
+             Age55to64 = ifelse(is.na(age55to64 - lag(age55to64)), 
+                                age55to64, age55to64 - lag(age55to64)), 
+             Unknown = ifelse(is.na(unknown - lag(unknown)), 
+                              unknown, unknown - lag(unknown)), 
+             TotalCase = ifelse(is.na(totalCase - lag(totalCase)), 
+                                totalCase, totalCase - lag(totalCase)),
+             HospitalProp = HospitalCase / TotalCase,
+             IcuProp = IcuCase / TotalCase) %>%
+      filter(year == input$year)
+  })
+  
+  # text bars 
+  
+  output$newCasesNum <- renderText({
+    scales::comma(tail(data(), 1)[["newCases"]])
+  })
+  output$totalCasesNum <- renderText({
+    scales::comma(tail(data(), 1)[["totalCases"]])
+  })
+  output$newDeathsNum <- renderText({
+    scales::comma(tail(data(), 1)[["newDeaths"]])
+  })
+  output$totalDeathsNum <- renderText({
+    scales::comma(tail(data(), 1)[["totalDeaths"]])
+  })
+  
+  # new cases plot
+  
+  output$newCases <- renderPlotly({
+    ggplotly(data() %>%
+               mutate(date = as.Date(date, "%d-%m-%y")) %>%
+               ggplot(aes(x = date, y = newCases)) +
+               geom_line(cex = 1, alpha = 0.8, col = "grey") +
+               geom_point(cex = 2) +
+               labs(y = "newConfirmCases", x = "date") +
+               scale_x_date(date_labels = "%d-%m-%y") +
+               theme_light()
+    )
+  })
+  
+  output$newCasesTab <- renderDataTable({data() %>% select(date, newCases = newCases)})
+  
+  # cumulative cases plot
+  
+  output$totalCases <- renderPlotly({
+    ggplotly(data() %>%
+               mutate(date = as.Date(date, "%d-%m-%y")) %>%
+               ggplot(aes(x = date, y = totalCases)) +
+               geom_line(cex = 1, alpha = 0.8, col = "blue") +
+               geom_point(cex = 2) + 
+               labs(y = "totalConfirmCases", x = "date") +
+               scale_x_date(date_labels = "%d-%m-%y") +
+               theme_light()
+    )
+  })
+  
+  output$totalCasesTab <- renderDataTable({data() %>% select(date, totalCases = totalCases)})
+  
+  # new deaths plot
+  
+  output$newDeaths <- renderPlotly({
+    ggplotly(data() %>%
+               mutate(date = as.Date(date, "%d-%m-%y")) %>%
+               ggplot(aes(x = date, y = newDeaths)) +
+               geom_line(cex = 0.8, alpha = 0.8, col = "black") +
+               geom_point(cex = 1) + 
+               labs(y = "newDeathCases", x = "date") +
+               scale_x_date(date_labels = "%d-%m-%y") +
+               theme_light()
+    )
+  })
+  
+  output$newDeathsTab <- renderDataTable({data() %>% select(date, newDeaths = newDeaths)})
+  
+  
+  # cumulative deaths plot
+  output$totalDeaths <- renderPlotly({
+    ggplotly(data() %>%
+               mutate(date = as.Date(date, "%d-%m-%y")) %>%
+               ggplot(aes(x = date, y = totalDeaths)) +
+               geom_line(cex = 1, alpha = 0.8, col = "red") +
+               geom_point(cex = 2) + 
+               labs(y = "totalDeathCases", x = "date") +
+               scale_x_date(date_labels = "%d-%m-%y") +
+               theme_light()
+    )
+  })
+  
+  output$totalDeathsTab <- renderDataTable({data() %>% select(date, totalDeaths = totalDeaths)})
+  
+  
+  # hospital -- icu
+  
+  output$hospitalCases <- renderPlotly({
+    ggplotly(dataAdd() %>%
+               select(month, HospitalCase, IcuCase) %>%
+               gather(-month, key = "Type", value = "case") %>%
+               ggplot(aes(x = factor(month), y = case, fill = Type)) + 
+               geom_line() +
+               geom_point(shape=16,size=4,colour="gray60") +
+               scale_fill_manual(values=c( "#FC4E07","#36BED9"))+
+               labs(x = "Month", y = "Cases", title = "Hospital & ICU cases")
+    )
+  })
+  
+  output$hospitalratio <- renderPlotly({
+    ggplotly(dataAdd() %>%
+               select(month, HospitalProp, IcuProp) %>%
+               gather(-month, key = "type", value = "proportion") %>%
+               mutate(type = factor(type)) %>%
+               ggplot(aes(x = factor(month), y = proportion, fill = type)) + 
+               geom_line() +
+               geom_point(shape=16,size=4,colour="gray60") +
+               scale_fill_manual(values=c( "#FC4E07","#36BED9"))+ 
+               labs(x = "Month", y = "Proportion", title = "Hospital & ICU Proportion")
+    )
+  })
+  
+  output$hospitalTab <- renderDataTable({
+    dataAdd() %>% select(month, HospitalCase, IcuCase, HospitalProp, IcuProp)
+  })
+  
+  output$sexCase <- renderPlotly({
+    ggplotly(dataAdd() %>%
+               select(month, MaleCase, FemaleCase) %>%
+               gather(-month, key = "Type", value = "case") %>%
+               
+               ggplot(aes(x = factor(month), y = case, fill = Type)) + 
+               geom_col() + 
+               labs(x = "Month", y ="Cases", title = "Male & Female cases")
+    )
+  })
+  
+  # sex 
+  
+  output$sexTab <- renderDataTable({
+    dataAdd() %>% select(month, FemaleCase, MaleCase)
+  })
+  
+  # age 
+  
+  output$ageCase <- renderPlotly({
+    ggplotly(dataAdd() %>%
+               select(month, Age1to4:Unknown) %>%
+               gather(-month, key = "caseType", value = "case") %>%
+               
+               ggplot(aes(x = factor(month), y = case, fill = caseType)) +
+               geom_col() +
+               labs(x = "Month", y = "Cases", title = "Age Group Cases")
+    )
+  })
+  
+  
+  output$ageTab <- renderDataTable({
+    dataAdd() %>% select(month, Age1to4:Unknown)
+  })
+  
+}
+
+shinyApp(ui, server)
+
+
